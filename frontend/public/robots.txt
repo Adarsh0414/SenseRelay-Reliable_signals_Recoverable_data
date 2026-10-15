@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+# Set PUBLIC_SITE_URL before production build to publish a canonical sitemap.

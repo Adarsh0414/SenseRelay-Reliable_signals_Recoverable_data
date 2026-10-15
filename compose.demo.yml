@@ -1,0 +1,49 @@
+# LOCAL DEMO ONLY. The mock service in this composition is a separate development fixture,
+# NOT MayaCardio's official biosignal-mock and NOT final submission evidence.
+services:
+  mock:
+    build: .
+    command: ["python", "-m", "pipeline.demo_mock", "--mode", "signal", "--seed", "7", "--duration", "3600", "--port", "7100", "--speed", "1"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+    cpus: 0.25
+    mem_limit: 128m
+    restart: unless-stopped
+
+  cloud:
+    build: .
+    command: ["uvicorn", "pipeline.cloud_app:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      CLOUD_DB_PATH: /data/cloud.db
+      CLOUD_API_TOKEN: ${CLOUD_API_TOKEN:-demo-only-change-me}
+    ports:
+     - "8000:8000"
+    volumes:
+     - cloud-data:/data
+    cpus: 1.0
+    mem_limit: 512m
+    restart: unless-stopped
+
+  device:
+    build: .
+    command: ["pipeline", "run"]
+    environment:
+      PIPELINE_DB_PATH: /data/device.db
+      MOCK_HOST: mock
+      MOCK_PORT: "7100"
+      CLOUD_URL: http://cloud:8000
+      CLOUD_API_TOKEN: ${CLOUD_API_TOKEN:-demo-only-change-me}
+      POLL_INTERVAL_SECONDS: "0.05"
+      HEALTH_INTERVAL_SECONDS: "1.0"
+    volumes:
+     - device-data:/data
+    depends_on:
+     - mock
+     - cloud
+    cpus: 3.75
+    mem_limit: 1700m
+    restart: unless-stopped
+
+volumes:
+  cloud-data:
+  device-data:
