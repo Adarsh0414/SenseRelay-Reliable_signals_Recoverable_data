@@ -268,7 +268,7 @@ After running on the official environment, record the exact environment, command
 
 ## AI assistance disclosure
 
-OpenAI ChatGPT was used to assist with architecture, implementation, test design, website development, and documentation. Before submitting or presenting the project, review the code and evidence yourself, verify the behavior in the target environment, and be prepared to explain the design decisions, guarantees, assumptions, and limitations.
+OpenAI ChatGPT was used to assist in this project at different stages.
 
 ## License
 
