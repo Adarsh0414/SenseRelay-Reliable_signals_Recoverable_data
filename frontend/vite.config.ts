@@ -16,17 +16,17 @@ function productionMetadata() {
       if (!['http:', 'https:'].includes(siteUrl.protocol)) {
         throw new Error('PUBLIC_SITE_URL must use HTTP or HTTPS.');
       }
-      const origin = siteUrl.origin.replace(/&/g, '&amp;').replace(/\"/g, '&quot;');
-      let output = html.replace(/(<meta property=\"og:image\" content=)\"[^\"]*\"/, `$1\"${origin}/og-mayacardio.png\"`);
-      if (/<meta property=\"og:url\"/.test(output)) {
-        output = output.replace(/<meta property=\"og:url\" content=\"[^\"]*\" \/>/, `<meta property=\"og:url\" content=\"${origin}/\" />`);
+      const origin = siteUrl.origin.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+      let output = html.replace(/(<meta property="og:image" content=)"[^"]*"/, `$1"${origin}/og-mayacardio.png"`);
+      if (/<meta property="og:url"/.test(output)) {
+        output = output.replace(/<meta property="og:url" content="[^"]*" \/>/, `<meta property="og:url" content="${origin}/" />`);
       } else {
-        output = output.replace('</head>', `    <meta property=\"og:url\" content=\"${origin}/\" />\n  </head>`);
+        output = output.replace('</head>', `    <meta property="og:url" content="${origin}/" />\n  </head>`);
       }
-      if (/<link rel=\"canonical\"/.test(output)) {
-        output = output.replace(/<link rel=\"canonical\" href=\"[^\"]*\" \/>/, `<link rel=\"canonical\" href=\"${origin}/\" />`);
+      if (/<link rel="canonical"/.test(output)) {
+        output = output.replace(/<link rel="canonical" href="[^"]*" \/>/, `<link rel="canonical" href="${origin}/" />`);
       } else {
-        output = output.replace('</head>', `    <link rel=\"canonical\" href=\"${origin}/\" />\n  </head>`);
+        output = output.replace('</head>', `    <link rel="canonical" href="${origin}/" />\n  </head>`);
       }
       return output;
     },

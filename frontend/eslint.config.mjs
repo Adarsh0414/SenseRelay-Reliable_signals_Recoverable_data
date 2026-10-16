@@ -10,11 +10,18 @@ const browserGlobals = {
   console: 'readonly', globalThis: 'readonly',
 };
 const nodeGlobals = { process: 'readonly', URL: 'readonly', console: 'readonly' };
+const serviceWorkerGlobals = {
+  self: 'readonly', caches: 'readonly', URL: 'readonly', fetch: 'readonly', Response: 'readonly',
+};
 
 export default [
   { ignores: ['dist/**', 'node_modules/**', 'coverage/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  {
+    files: ['public/sw.js'],
+    languageOptions: { globals: serviceWorkerGlobals },
+  },
   {
     files: ['src/**/*.{ts,tsx}'],
     languageOptions: { globals: browserGlobals },
@@ -31,5 +38,9 @@ export default [
     files: ['*.ts', '*.mjs'],
     languageOptions: { globals: nodeGlobals },
     rules: { 'no-undef': 'off' },
+  },
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: { globals: nodeGlobals },
   },
 ];
