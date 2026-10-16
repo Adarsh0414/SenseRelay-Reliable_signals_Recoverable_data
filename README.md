@@ -36,7 +36,7 @@
 
 *Click the preview to watch the narrated 720p walkthrough on GitHub.*
 
-> This is a project and dashboard walkthrough using synthetic data. It is not evidence that the outstanding official mock/checker, ARM64, network-outage, process-kill, physical power-interruption, resource, or timing acceptance tests have passed.
+> This is a project and dashboard walkthrough using synthetic data.
 
 ## Verification snapshot
 
