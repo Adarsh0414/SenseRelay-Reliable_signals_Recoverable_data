@@ -4,6 +4,7 @@ export type AuthSession = {
   configured: boolean;
   needs_configuration: boolean;
   username?: string | null;
+  public_read_only?: boolean;
 };
 
 

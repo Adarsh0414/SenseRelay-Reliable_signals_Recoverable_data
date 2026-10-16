@@ -7,7 +7,8 @@ This project is an engineering demonstration using synthetic sensor data. It is 
 ## Credential boundaries
 
 - `CLOUD_API_TOKEN` authenticates device-to-cloud ingestion. React never reads or embeds this token.
-- `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`, and `DASHBOARD_SESSION_SECRET` protect browser sessions for remote deployments.
+- `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`, and `DASHBOARD_SESSION_SECRET` protect browser sessions for normal remote deployments.
+- `DASHBOARD_PUBLIC_READ_ONLY=true` is an optional portfolio-only mode for a deployment containing synthetic demo data only. It permits anonymous GET access to dashboard routes, rejects dashboard write actions, and requires `ENABLE_SYNTHETIC_DEMO_SEED=true`; do not enable it if real or private records can enter the dashboard databases.
 - Dashboard sessions use an HMAC-signed cookie with an eight-hour expiry, `HttpOnly`, `SameSite=Strict`, and `Secure` when HTTPS is used or explicitly configured.
 - Credentials are read by the backend from environment variables. Partial configuration fails closed. If dashboard credentials are entirely absent, dashboard data routes allow loopback clients only for local development.
 - If `CLOUD_API_TOKEN` is absent, ingestion is allowed only from loopback clients; remote ingestion fails closed with a configuration error.
@@ -35,7 +36,7 @@ Use a distinct random value for `CLOUD_API_TOKEN`. Never commit actual secret va
 
 Before exposing an instance publicly:
 
-1. Configure all dashboard credentials and a strong, independent cloud-ingestion token.
+1. For a protected deployment, configure all dashboard credentials. For a portfolio demo, enable `DASHBOARD_PUBLIC_READ_ONLY=true` only when all dashboard data is synthetic and set `ENABLE_SYNTHETIC_DEMO_SEED=true`; do not share dashboard credentials in the public README. In both modes use a strong, independent cloud-ingestion token.
 2. Terminate HTTPS at a trusted reverse proxy and set `DASHBOARD_COOKIE_SECURE=true`.
 3. Restrict inbound ports to the reverse proxy and required administration channels.
 4. Keep SQLite files and backups outside public web roots, on persistent storage with controlled permissions.
@@ -65,4 +66,4 @@ Before exposing an instance publicly:
 
 ## Synthetic demo fixture endpoint safety
 
-The dashboard-only fixture creates a predictable synthetic session and is useful for local presentation. Its seed, reset, status, and download endpoints require dashboard access; mutating POST requests validate origin. Fixture seeding/reset/download is enabled by default only when `APP_ENV` is `development`, `dev`, `test`, or `testing`, unless `ENABLE_SYNTHETIC_DEMO_SEED` is deliberately overridden. Keep it disabled on public production deployments. The fixture contains no patient records. Generated JSONL and SQLite files are runtime data and should not be committed to Git.
+The dashboard-only fixture creates a predictable synthetic session and is useful for presentation. In normal mode, its seed, reset, status, and download endpoints require dashboard access; mutating POST requests validate origin. In `DASHBOARD_PUBLIC_READ_ONLY=true` mode, startup seeds the deterministic fixture, anonymous dashboard GET routes are allowed, and dashboard write requests are rejected. This mode requires `ENABLE_SYNTHETIC_DEMO_SEED=true` and is safe only while the deployment contains synthetic demonstration records exclusively. Device ingestion continues to require `CLOUD_API_TOKEN`. Generated JSONL and SQLite files are runtime data and should not be committed to Git.

@@ -8,12 +8,16 @@ from starlette.requests import Request
 from fastapi.testclient import TestClient
 
 
-def _reload_app(monkeypatch, tmp_path, *, dashboard_auth: bool):
+def _reload_app(monkeypatch, tmp_path, *, dashboard_auth: bool, public_read_only: bool = False):
     monkeypatch.setenv("CLOUD_DB_PATH", str(tmp_path / "cloud.db"))
     monkeypatch.setenv("PIPELINE_DB_PATH", str(tmp_path / "missing-device.db"))
     monkeypatch.setenv("DASHBOARD_DEVICE_DB_PATH", str(tmp_path / "missing-device.db"))
     monkeypatch.setenv("DEMO_DATASET_PATH", str(tmp_path / "synthetic_demo_dataset.jsonl"))
     monkeypatch.delenv("CLOUD_API_TOKEN", raising=False)
+    if public_read_only:
+        monkeypatch.setenv("DASHBOARD_PUBLIC_READ_ONLY", "true")
+    else:
+        monkeypatch.delenv("DASHBOARD_PUBLIC_READ_ONLY", raising=False)
     if dashboard_auth:
         monkeypatch.setenv("DASHBOARD_USERNAME", "reviewer")
         monkeypatch.setenv("DASHBOARD_PASSWORD", "a-long-test-only-password")
@@ -92,6 +96,45 @@ def test_dashboard_rejects_partial_auth_configuration(monkeypatch, tmp_path):
     assert client.get("/api/dashboard/summary").status_code == 503
     assert client.get("/api/auth/session").json()["needs_configuration"] is True
 
+
+
+def test_public_read_only_demo_is_auto_seeded_and_blocks_mutations(monkeypatch, tmp_path):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("ENABLE_SYNTHETIC_DEMO_SEED", "true")
+    monkeypatch.setenv("DASHBOARD_PUBLIC_READ_ONLY", "true")
+    cloud_module = _reload_app(monkeypatch, tmp_path, dashboard_auth=True, public_read_only=True)
+
+    # The startup hook materializes the same deterministic fixture visitors will inspect.
+    with TestClient(cloud_module.app, base_url="https://mayacardio.example") as client:
+        auth = client.get("/api/auth/session").json()
+        assert auth["authenticated"] is True
+        assert auth["login_required"] is False
+        assert auth["public_read_only"] is True
+        assert auth["username"] == "Public demo"
+
+        summary = client.get("/api/dashboard/summary")
+        assert summary.status_code == 200, summary.text
+        status = client.get("/api/dashboard/demo/status")
+        assert status.status_code == 200, status.text
+        assert status.json()["seeded"] is True
+        assert status.json()["sample_rows"] == 23960
+
+        # Visitors can read the dashboard, but even a POST from an otherwise valid
+        # session cannot seed or delete data in public-read-only mode.
+        assert client.post("/api/dashboard/demo/seed").status_code == 403
+        assert client.post("/api/dashboard/demo/reset").status_code == 403
+
+        # Public dashboard mode does not disable ingestion-token protection.
+        scope = {
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+            "method": "POST", "scheme": "https", "path": "/v1/ingest", "raw_path": b"/v1/ingest",
+            "query_string": b"", "headers": [], "client": ("198.51.100.8", 12345),
+            "server": ("mayacardio.example", 443),
+        }
+        request = Request(scope)
+        with pytest.raises(HTTPException) as raised:
+            cloud_module.verify_token(request, None)
+        assert raised.value.status_code == 503
 
 def test_remote_ingestion_fails_closed_when_cloud_token_is_missing(monkeypatch, tmp_path):
     cloud_module = _reload_app(monkeypatch, tmp_path, dashboard_auth=False)

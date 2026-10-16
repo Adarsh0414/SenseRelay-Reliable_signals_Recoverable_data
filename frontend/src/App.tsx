@@ -105,10 +105,8 @@ function PageFrame({ children, home = false }: { children: ReactNode; home?: boo
   return (
     <div className={`site-shell ${home ? 'site-shell-home' : ''}`}>
       <Header />
-      <main className="site-main">
-        {children}
-        <Footer />
-      </main>
+      <main className="site-main">{children}</main>
+      {!home && <Footer />}
     </div>
   );
 }
@@ -145,7 +143,7 @@ function HomePage() {
           <SignalArtwork />
         </div>
       </section>
-      <section className="notice-strip"><div className="notice-inner"><ShieldCheck size={19} /><p><strong>Built for engineering verification.</strong> This project uses synthetic signals only and is not a clinically validated monitoring or diagnostic system.</p><Link to="/security">Read the scope note <ArrowRight size={14} /></Link></div></section>
+      <section className="notice-strip"><div className="notice-inner"><ShieldCheck size={19} /><p><strong>Built for engineering verification.</strong> Synthetic data only. This project uses synthetic signals and is not a clinically validated monitoring or diagnostic system.</p><Link to="/security">Read the scope note <ArrowRight size={14} /></Link></div></section>
       <section className="section content-section">
         <div className="section-heading"><div><div className="eyebrow eyebrow-light">THE SYSTEM</div><h2>Resilience you can inspect.</h2></div><p>Designed around durable collection and transparent operational state - not a dashboard that hides what it cannot verify.</p></div>
         <div className="feature-grid">
@@ -333,7 +331,7 @@ function InfoPage({ kind }: { kind: 'architecture' | 'security' | 'docs' }) {
         { title: 'Separate credentials', text: 'Device-to-cloud ingestion uses a server-side bearer token. Browser access uses a separate signed HttpOnly dashboard session when authentication is configured.' },
         { title: 'Local-only development fallback', text: 'When dashboard credentials are not configured, the dashboard API only allows loopback clients. Remote access is rejected until credentials are set.' },
         { title: 'Browser protections', text: 'The API sets baseline security headers, validates login origin, applies SameSite and HttpOnly cookie flags, and rate-limits failed sign-in attempts in process memory.' },
-        { title: 'Deployment responsibility', text: 'Public deployments must configure strong dashboard credentials and a random session secret, use HTTPS, restrict network access, and protect persistent storage.' },
+        { title: 'Deployment responsibility', text: 'Public deployments must either keep dashboard credentials enabled or deliberately use DASHBOARD_PUBLIC_READ_ONLY for a synthetic-only portfolio demo. Public demo mode allows dashboard reads only, blocks demo write/reset actions, and leaves device ingestion separately protected by its server-side token.' },
         { title: 'Not certified or clinically validated', text: 'No HIPAA, GDPR, clinical accuracy, regulatory approval, or medical safety certification is claimed. Formal threat modelling and deployment review are still required before public production use.' },
       ],
     },
@@ -369,7 +367,7 @@ function DashboardGate() {
     if (auth?.needs_configuration || !auth?.configured) return <PageFrame><AuthSetupNotice /></PageFrame>;
     return <PageFrame><LoginPanel onSignedIn={() => void refreshAuth()} /></PageFrame>;
   }
-  return <DashboardShell username={auth.username || 'local-development'} onLogout={auth.configured ? async () => { try { await apiFetch('/api/auth/logout', { method: 'POST' }); } finally { await refreshAuth(); } } : undefined} />;
+  return <DashboardShell username={auth.username || 'local-development'} publicReadOnly={Boolean(auth.public_read_only)} onLogout={auth.configured ? async () => { try { await apiFetch('/api/auth/logout', { method: 'POST' }); } finally { await refreshAuth(); } } : undefined} />;
 }
 
 function AuthSetupNotice() {
@@ -397,6 +395,7 @@ type DashboardData = {
   events: IntegrityEvent[];
   resources: ResourceSnapshot | null;
   demoStatus: DemoStatus | null;
+  publicReadOnly: boolean;
   demoBusy: boolean;
   demoMessage: string;
   demoError: string;
@@ -408,7 +407,7 @@ type DashboardData = {
   refresh: () => Promise<void>;
 };
 
-function DashboardShell({ username, onLogout }: { username: string; onLogout?: () => void }) {
+function DashboardShell({ username, publicReadOnly = false, onLogout }: { username: string; publicReadOnly?: boolean; onLogout?: () => void }) {
   const [activeSection, setActiveSection] = useState<DashboardSection>('overview');
   const [summary, setSummary] = useState<Summary | null>(null);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -481,7 +480,7 @@ function DashboardShell({ username, onLogout }: { username: string; onLogout?: (
     } catch { /* Preferences remain active for this page load if storage is unavailable. */ }
   }, [refreshIntervalSeconds]);
 
-  const data: DashboardData = { summary, sessions, totalSessions, events, resources, demoStatus, demoBusy, demoMessage, demoError, seedDemo, resetDemo, isLoading, lastUpdated, error, refresh };
+  const data: DashboardData = { summary, sessions, totalSessions, events, resources, demoStatus, publicReadOnly, demoBusy, demoMessage, demoError, seedDemo, resetDemo, isLoading, lastUpdated, error, refresh };
   const navItems: { id: DashboardSection; label: string; icon: ReactNode }[] = [
     { id: 'overview', label: 'Overview', icon: <Gauge size={17} /> },
     { id: 'sessions', label: 'Sessions', icon: <Layers3 size={17} /> },
@@ -513,7 +512,7 @@ function DashboardShell({ username, onLogout }: { username: string; onLogout?: (
           {activeSection === 'integrity' && <IntegrityView data={data} selectedSession={selectedSession} setSelectedSession={setSelectedSession} sessions={sessions} />}
           {activeSection === 'resources' && <ResourcesView data={data} />}
           {activeSection === 'settings' && <SettingsView data={data} refreshIntervalSeconds={refreshIntervalSeconds} setRefreshIntervalSeconds={setRefreshIntervalSeconds} themeMode={themeMode} setThemeMode={setThemeMode} />}
-          <div className="dashboard-footnote"><span><LockKeyhole size={13} /> Monitoring views are read-only; demo controls affect only the fixed synthetic fixture</span><span>Auto-refresh every {refreshIntervalSeconds} seconds{data.lastUpdated ? ` · Updated ${formatRelative(data.lastUpdated / 1000)}` : ''}</span></div>
+          <div className="dashboard-footnote"><span><LockKeyhole size={13} /> {publicReadOnly ? 'Public read-only demo · actions that modify the dataset are disabled' : 'Monitoring views are read-only; demo controls affect only the fixed synthetic fixture'}</span><span>Auto-refresh every {refreshIntervalSeconds} seconds{data.lastUpdated ? ` · Updated ${formatRelative(data.lastUpdated / 1000)}` : ''}</span></div>
         </main>
       </div>
     </div>
@@ -540,7 +539,7 @@ function OverviewView({ data, sessions, onChooseSession }: { data: DashboardData
   const syncedPercentage = deviceSamples !== null && deviceSamples !== undefined && deviceSamples > 0 && backlog !== null && backlog !== undefined ? Math.max(0, Math.min(100, ((deviceSamples - backlog) / Math.max(1, deviceSamples)) * 100)) : null;
   return <>
     <div className="dashboard-heading-row"><PageTitle eyebrow="OPERATIONS / OVERVIEW" title="System overview" description="A live view of sample persistence, cloud ingestion, processing activity, and data quality." /><div className="heading-status"><span className={`status-dot ${data.error ? 'status-dot-danger' : 'status-dot-success'}`} />{data.error ? 'API unavailable' : 'API reachable'}<button className="icon-button refresh-button" title="Refresh now" aria-label="Refresh dashboard" onClick={() => void data.refresh()}><RefreshCw size={16} /></button></div></div>
-    <div className="demo-notice"><Signal size={17} /><div><strong>{data.demoStatus?.seeded ? 'Deterministic demo dataset persisted' : 'Synthetic demonstration environment'}</strong><span>{data.demoStatus?.seeded ? `Session ${data.demoStatus.session_id} is stored in the device SQLite store and the cloud-service SQLite database on this local demo. Source file: data/${data.demoStatus.dataset_file}. Every chart and table below reads records from these stores; offline labels are staged fixture metadata, not a claim of a live outage.` : data.demoStatus?.bundled_fixture_available ? 'The checked-in seed-7 synthetic source is ready. Load it once to create the runtime JSONL file and populate both SQLite stores, then inspect the same session across every dashboard page.' : 'No dashboard-only placeholder metrics are injected. Load a repeatable seed-7 dataset to populate the local file and both SQLite stores, then inspect the same session across every dashboard page.'}</span></div>{data.demoStatus?.enabled && (data.demoStatus.seeded ? <a className="button button-outline demo-action-button" href="/api/dashboard/demo/download"><ArrowDownToLine size={14} /> Download JSONL</a> : <button className="button button-dark demo-action-button" disabled={data.demoBusy} onClick={() => void data.seedDemo()}>{data.demoBusy ? <RefreshCw size={14} className="spin" /> : <Database size={14} />}{data.demoBusy ? 'Storing dataset…' : 'Load demo dataset'}</button>)}<span className="notice-label">{data.demoStatus?.seeded ? 'STORED' : 'DEMO'}</span></div>
+    <div className="demo-notice"><Signal size={17} /><div><strong>{data.demoStatus?.seeded ? 'Deterministic demo dataset persisted' : 'Synthetic demonstration environment'}</strong><span>{data.demoStatus?.seeded ? `Session ${data.demoStatus.session_id} is stored in the device SQLite store and the cloud-service SQLite database on this local demo. Source file: data/${data.demoStatus.dataset_file}. Every chart and table below reads records from these stores; offline labels are staged fixture metadata, not a claim of a live outage.` : data.demoStatus?.bundled_fixture_available ? 'The checked-in seed-7 synthetic source is ready. Load it once to create the runtime JSONL file and populate both SQLite stores, then inspect the same session across every dashboard page.' : 'No dashboard-only placeholder metrics are injected. Load a repeatable seed-7 dataset to populate the local file and both SQLite stores, then inspect the same session across every dashboard page.'}</span></div>{data.demoStatus?.enabled && (data.demoStatus.seeded ? <a className="button button-outline demo-action-button" href="/api/dashboard/demo/download"><ArrowDownToLine size={14} /> Download JSONL</a> : !data.publicReadOnly && <button className="button button-dark demo-action-button" disabled={data.demoBusy} onClick={() => void data.seedDemo()}>{data.demoBusy ? <RefreshCw size={14} className="spin" /> : <Database size={14} />}{data.demoBusy ? 'Storing dataset…' : 'Load demo dataset'}</button>)}<span className="notice-label">{data.demoStatus?.seeded ? 'STORED' : 'DEMO'}</span></div>
     {data.demoError && <div className="alert-banner" role="alert"><CircleAlert size={17} /><div><strong>Demo data action failed</strong><span>{data.demoError}</span></div><button className="button button-sm button-outline" onClick={() => void data.refresh()}>Retry status</button></div>}
     {data.demoMessage && <div className="demo-feedback" role="status"><CheckCircle2 size={16} /><span>{data.demoMessage}</span></div>}
     {data.demoStatus?.enabled && <div className="demo-fixture-meta"><div><span className="small-key">{data.demoStatus.seeded ? 'PERSISTED FIXTURE' : 'REPRODUCIBLE FIXTURE'}</span><strong>{data.demoStatus.duration_seconds} seconds · {data.demoStatus.sample_rate_hz} Hz · seed {data.demoStatus.seed}</strong><span>{formatCount(data.demoStatus.sample_rows)} expected sample rows ({formatCount(data.demoStatus.sensor_1_sample_count)} Sensor 1 · {formatCount(data.demoStatus.sensor_2_sample_count)} Sensor 2) · {data.demoStatus.window_count} derived windows · Sensor {data.demoStatus.controlled_gap.sensor} gap at {data.demoStatus.controlled_gap.from_index.toLocaleString()}-{data.demoStatus.controlled_gap.to_index.toLocaleString()} · offline windows {data.demoStatus.offline_windows.join(', ')}</span></div><span className="fixture-hash-note">{data.demoStatus.seeded ? 'Loaded from local JSONL + both SQLite stores' : data.demoStatus.bundled_fixture_available ? 'Bundled source → runtime file + both stores' : 'Generated with fixed seed and persisted'}</span></div>}
@@ -568,7 +567,7 @@ function StatusPill({ state, label }: { state: string; label: string }) {
 function SessionsView({ data, selectedSession, setSelectedSession, onViewResults }: { data: DashboardData; selectedSession: string; setSelectedSession: (id: string) => void; onViewResults: (id: string) => void }) {
   const [search, setSearch] = useState('');
   const filtered = useMemo(() => sessionsFilter(data.sessions, search), [data.sessions, search]);
-  return <><PageTitle eyebrow="OPERATIONS / SESSIONS" title="Sessions" description="Browse known sessions and inspect the sample, loss, and result counts the API can verify." action={<button className="button button-outline" onClick={() => void data.refresh()}><RefreshCw size={15} /> Refresh</button>} /><div className="session-toolbar"><div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search session ID…" aria-label="Search sessions" /></div><span className="result-count">{filtered.length} shown · {data.totalSessions} total</span></div><section className="panel table-panel">{filtered.length ? <SessionsTable sessions={filtered} onViewResults={(id) => { setSelectedSession(id); onViewResults(id); }} selectedSession={selectedSession} /> : data.sessions.length ? <EmptyState icon={<Search />} title="No matching sessions" detail="Try a shorter search term or clear the search box." /> : <div className="empty-state"><span className="empty-icon"><Layers3 /></span><h3>No sessions found</h3><p>Start the official/development sensor mock and pipeline, or load the deterministic demo fixture to inspect a persisted session. The fixture is generated once, saved to JSONL and SQLite, and reused by the results and integrity views.</p>{data.demoStatus?.enabled && <button className="button button-primary" onClick={() => void data.seedDemo()} disabled={data.demoBusy}>{data.demoBusy ? 'Storing dataset…' : 'Load persistent demo dataset'}</button>}</div>}</section><div className="supporting-note"><InfoIcon /> <p>Session timestamps reflect application storage records. The API may not retain a complete wall-clock timeline for every sample.</p></div></>;
+  return <><PageTitle eyebrow="OPERATIONS / SESSIONS" title="Sessions" description="Browse known sessions and inspect the sample, loss, and result counts the API can verify." action={<button className="button button-outline" onClick={() => void data.refresh()}><RefreshCw size={15} /> Refresh</button>} /><div className="session-toolbar"><div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search session ID…" aria-label="Search sessions" /></div><span className="result-count">{filtered.length} shown · {data.totalSessions} total</span></div><section className="panel table-panel">{filtered.length ? <SessionsTable sessions={filtered} onViewResults={(id) => { setSelectedSession(id); onViewResults(id); }} selectedSession={selectedSession} /> : data.sessions.length ? <EmptyState icon={<Search />} title="No matching sessions" detail="Try a shorter search term or clear the search box." /> : <div className="empty-state"><span className="empty-icon"><Layers3 /></span><h3>No sessions found</h3><p>Start the official/development sensor mock and pipeline, or load the deterministic demo fixture to inspect a persisted session. The fixture is generated once, saved to JSONL and SQLite, and reused by the results and integrity views.</p>{data.demoStatus?.enabled && !data.publicReadOnly && <button className="button button-primary" onClick={() => void data.seedDemo()} disabled={data.demoBusy}>{data.demoBusy ? 'Storing dataset…' : 'Load persistent demo dataset'}</button>}</div>}</section><div className="supporting-note"><InfoIcon /> <p>Session timestamps reflect application storage records. The API may not retain a complete wall-clock timeline for every sample.</p></div></>;
 }
 
 function sessionsFilter(rows: SessionRow[], search: string) {
@@ -635,7 +634,7 @@ function SettingsView({
         <div className="state-line"><span>Runtime JSONL file</span><strong>{data.demoStatus?.dataset_file_exists ? 'Stored' : 'Not created yet'}</strong></div>
         <div className="state-line"><span>Bundled source fixture</span><strong>{data.demoStatus?.bundled_fixture_available ? 'Included' : 'Not included'}</strong></div>
         <p className="settings-helper">The fixture is generated from a fixed seed and a documented algorithm. A controlled sensor-2 gap is explicitly recorded; three windows are marked offline to demonstrate the processing-mode field. This is not the official biosignal-mock or acceptance-test evidence.</p>
-        <div className="settings-links">{data.demoStatus?.enabled && !data.demoStatus.seeded && <button className="button button-primary" onClick={() => void data.seedDemo()} disabled={data.demoBusy}>{data.demoBusy ? 'Storing…' : data.demoStatus?.bundled_fixture_available ? 'Load and store bundled fixture' : 'Generate and store fixture'}</button>}{data.demoStatus?.seeded && <><a className="button button-outline" href="/api/dashboard/demo/download"><ArrowDownToLine size={15} /> Download JSONL</a><button className="button button-danger-outline" onClick={() => void data.resetDemo()} disabled={data.demoBusy}>Reset demo session</button></>}{!data.demoStatus?.enabled && <span className="api-docs-disabled-note">Synthetic fixture management is disabled for this deployment.</span>}</div>
+        <div className="settings-links">{data.demoStatus?.enabled && !data.demoStatus.seeded && !data.publicReadOnly && <button className="button button-primary" onClick={() => void data.seedDemo()} disabled={data.demoBusy}>{data.demoBusy ? 'Storing…' : data.demoStatus?.bundled_fixture_available ? 'Load and store bundled fixture' : 'Generate and store fixture'}</button>}{data.demoStatus?.seeded && <><a className="button button-outline" href="/api/dashboard/demo/download"><ArrowDownToLine size={15} /> Download JSONL</a>{!data.publicReadOnly && <button className="button button-danger-outline" onClick={() => void data.resetDemo()} disabled={data.demoBusy}>Reset demo session</button>}</>}{!data.demoStatus?.enabled && <span className="api-docs-disabled-note">Synthetic fixture management is disabled for this deployment.</span>}</div>
         {data.demoError && <p className="form-error" role="alert">{data.demoError}</p>}{data.demoMessage && <p className="demo-feedback" role="status"><CheckCircle2 size={15} />{data.demoMessage}</p>}
       </section>
       <section className="panel settings-panel">

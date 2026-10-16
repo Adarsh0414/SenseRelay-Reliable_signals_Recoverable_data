@@ -54,6 +54,7 @@ _DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 _DASHBOARD_SESSION_SECRET = os.getenv("DASHBOARD_SESSION_SECRET", "")
 _DASHBOARD_COOKIE_NAME = "mayacardio_dashboard_session"
 _DASHBOARD_SESSION_SECONDS = 8 * 60 * 60
+_DASHBOARD_PUBLIC_READ_ONLY = os.getenv("DASHBOARD_PUBLIC_READ_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
 _DASHBOARD_AUTH_PARTIAL = any((_DASHBOARD_USERNAME, _DASHBOARD_PASSWORD, _DASHBOARD_SESSION_SECRET)) and not (
     _DASHBOARD_USERNAME and _DASHBOARD_PASSWORD and len(_DASHBOARD_SESSION_SECRET) >= 32 and len(_DASHBOARD_PASSWORD) >= 12
 )
@@ -161,6 +162,13 @@ def _read_dashboard_session(request: Request) -> str | None:
 
 
 def require_dashboard_access(request: Request) -> str:
+    # Portfolio mode exposes dashboard GET routes only. POST/other methods stay blocked,
+    # even when administrator credentials exist on the server. Device ingestion remains
+    # protected independently by verify_token.
+    if _public_read_only_demo_enabled():
+        if request.method in {"GET", "HEAD"} and request.url.path.startswith("/api/dashboard/"):
+            return "public-demo"
+        raise HTTPException(status_code=403, detail="The public dashboard is read-only")
     if _DASHBOARD_AUTH_PARTIAL:
         raise HTTPException(status_code=503, detail="Dashboard authentication is partially configured; set all dashboard credentials")
     if not _DASHBOARD_AUTH_CONFIGURED:
@@ -352,6 +360,9 @@ def events(limit: int = Query(default=100, ge=1, le=1000)) -> list[dict[str, Any
 
 @app.get("/api/auth/session")
 def dashboard_auth_session(request: Request) -> dict[str, Any]:
+    if _public_read_only_demo_enabled():
+        return {"authenticated": True, "login_required": False, "configured": False,
+                "needs_configuration": False, "username": "Public demo", "public_read_only": True}
     if _DASHBOARD_AUTH_PARTIAL:
         return {"authenticated": False, "login_required": True, "configured": False, "needs_configuration": True}
     if _DASHBOARD_AUTH_CONFIGURED:
@@ -411,6 +422,10 @@ def _demo_seed_enabled() -> bool:
     return _APP_ENV in {"dev", "development", "test", "testing"}
 
 
+def _public_read_only_demo_enabled() -> bool:
+    return _DASHBOARD_PUBLIC_READ_ONLY and _demo_seed_enabled()
+
+
 def _demo_dataset_path() -> Path:
     default_path = Path(__file__).resolve().parent.parent / "data" / "synthetic_demo_dataset.jsonl"
     return Path(os.getenv("DEMO_DATASET_PATH", str(default_path))).expanduser().resolve()
@@ -427,6 +442,19 @@ def _device_database_for_demo_seed() -> Database:
         if cache_key not in _device_db_cache:
             _device_db_cache[cache_key] = Database(cache_key)
         return _device_db_cache[cache_key]
+
+
+@app.on_event("startup")
+def _prepare_public_read_only_demo() -> None:
+    """Materialize the fixed synthetic fixture before anonymous read-only visitors arrive."""
+    if not _DASHBOARD_PUBLIC_READ_ONLY:
+        return
+    if not _demo_seed_enabled():
+        raise RuntimeError("DASHBOARD_PUBLIC_READ_ONLY requires ENABLE_SYNTHETIC_DEMO_SEED=true")
+    from .demo_dataset import seed_persistent_demo
+
+    device_db = _device_database_for_demo_seed()
+    seed_persistent_demo(db, device_db, _demo_dataset_path())
 
 
 def _demo_store_status(database: Database, session_id: str) -> dict[str, int | bool]:
