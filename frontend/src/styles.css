@@ -732,3 +732,34 @@ body { min-height: 0; }
     margin-top: 24px;
   }
 }
+
+
+/* Home banner positioning: extend the hero's own background so no lighter page
+   background is exposed behind the relocated scope banner. Keep the banner and
+   both borders together as one normal-flow component. */
+.site-shell-home .hero-section {
+  padding-bottom: 120px;
+}
+.site-shell-home .site-main > .notice-strip {
+  margin-top: 0;
+  border-top: 1px solid #d7eee8;
+  border-bottom: 1px solid #d7eee8;
+  box-shadow: none;
+}
+.site-shell-home .site-main > .notice-strip .notice-inner {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+@media (max-width: 800px) {
+  .site-shell-home .hero-section {
+    padding-bottom: 72px;
+  }
+  .site-shell-home .site-main > .notice-strip {
+    margin-top: 0;
+  }
+}
+@media (max-height: 680px) and (min-width: 801px) {
+  .site-shell-home .hero-section {
+    padding-bottom: 80px;
+  }
+}
