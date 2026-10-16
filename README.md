@@ -16,6 +16,7 @@
 
 ## Contents
 
+- [Project walkthrough](#project-walkthrough)
 - [At a glance](#at-a-glance)
 - [Key capabilities](#key-capabilities)
 - [Architecture](#architecture)
@@ -28,6 +29,14 @@
 - [Final assessment validation](#final-assessment-validation)
 - [Production and security](#production-and-security-notes)
 - [Documentation](#documentation)
+
+## Project walkthrough
+
+[![Watch the MayaCardio project walkthrough](frontend/public/mayacardio-walkthrough-thumbnail.png)](https://github.com/Adarsh0414/mayacardio-never-lose-a-heartbeat/issues/1#issue-5882566768)
+
+*Click the preview to watch the narrated 720p walkthrough on GitHub.*
+
+> This is a project and dashboard walkthrough using synthetic data. It is not evidence that the outstanding official mock/checker, ARM64, network-outage, process-kill, physical power-interruption, resource, or timing acceptance tests have passed.
 
 ## Verification snapshot
 
@@ -268,7 +277,7 @@ After running on the official environment, record the exact environment, command
 
 ## AI assistance disclosure
 
-OpenAI ChatGPT was used to assist in this project at different stages.
+OpenAI ChatGPT was used to assist with architecture, implementation, test design, website development, and documentation. Before submitting or presenting the project, review the code and evidence yourself, verify the behavior in the target environment, and be prepared to explain the design decisions, guarantees, assumptions, and limitations.
 
 ## License
 
