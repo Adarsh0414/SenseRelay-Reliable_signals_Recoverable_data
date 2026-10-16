@@ -736,9 +736,10 @@ body { min-height: 0; }
 
 /* Home banner positioning: extend the hero's own background so no lighter page
    background is exposed behind the relocated scope banner. Keep the banner and
-   both borders together as one normal-flow component. */
+   both borders together as one normal-flow component. The desktop offset is
+   reduced by about 1 cm from the previous 120px version. */
 .site-shell-home .hero-section {
-  padding-bottom: 120px;
+  padding-bottom: 82px;
 }
 .site-shell-home .site-main > .notice-strip {
   margin-top: 0;
@@ -752,7 +753,7 @@ body { min-height: 0; }
 }
 @media (max-width: 800px) {
   .site-shell-home .hero-section {
-    padding-bottom: 72px;
+    padding-bottom: 34px;
   }
   .site-shell-home .site-main > .notice-strip {
     margin-top: 0;
@@ -760,6 +761,6 @@ body { min-height: 0; }
 }
 @media (max-height: 680px) and (min-width: 801px) {
   .site-shell-home .hero-section {
-    padding-bottom: 80px;
+    padding-bottom: 42px;
   }
 }
