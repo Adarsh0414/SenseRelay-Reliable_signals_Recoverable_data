@@ -708,3 +708,27 @@ body { min-height: 0; }
     margin-top: 12px;
   }
 }
+
+/* Home scope banner refinement: give the banner real breathing room and a matching top/bottom edge.
+   Keep this scoped to the public Home page so dashboard workspaces remain unchanged. */
+.site-shell-home .site-main > .notice-strip {
+  margin-top: 32px;
+  border-top: 1px solid #d7eee8;
+  border-bottom: 1px solid #d7eee8;
+  box-shadow: 0 1px 0 rgba(15, 47, 53, 0.025);
+}
+.site-shell-home .site-main > .notice-strip .notice-inner {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+:root[data-theme="dark"] .site-shell-home .site-main > .notice-strip {
+  background: #112f33;
+  border-top-color: #22524d;
+  border-bottom-color: #22524d;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.12);
+}
+@media (max-width: 800px) {
+  .site-shell-home .site-main > .notice-strip {
+    margin-top: 24px;
+  }
+}
