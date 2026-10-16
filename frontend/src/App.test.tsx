@@ -15,12 +15,11 @@ describe('public website pages', () => {
   it('renders the synthetic-data landing page, theme control, and PWA install affordance', () => {
     const html = renderPath('/');
     expect(html).toContain('Reliable signals.');
-    expect(html).toContain('Resilience you can inspect.');
-    expect(html).toContain('One pipeline. Clear boundaries.');
-    expect(html).toContain('See what the running system can actually prove.');
     expect(html).toContain('Synthetic data only');
     expect(html).toContain('not a clinically validated monitoring or diagnostic system');
     expect(html).toContain('Home');
+    expect(html).toContain('Admin');
+    expect(html).toContain('href="/admin"');
     expect(html).toContain('Switch to dark mode');
     expect(html).toContain('Install MayaCardio as an app');
   });

@@ -6,11 +6,15 @@ Set CLOUD_DB_PATH to a persistent volume and CLOUD_API_TOKEN for deployment.
 from __future__ import annotations
 
 import base64
+import csv
+import hashlib
 import hmac
 import ipaddress
+import io
 import json
 import os
 import time
+import uuid
 from collections import defaultdict, deque
 from pathlib import Path
 from threading import Lock
@@ -84,7 +88,7 @@ async def add_security_headers(request: Request, call_next):
                "object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
     response.headers.setdefault("Content-Security-Policy", csp)
     response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
-    if request.url.path.startswith(("/api/auth", "/api/dashboard", "/v1/")):
+    if request.url.path.startswith(("/api/auth", "/api/dashboard", "/api/admin", "/v1/")):
         response.headers.setdefault("Cache-Control", "no-store")
     if request.url.scheme == "https":
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
@@ -181,14 +185,37 @@ def require_dashboard_access(request: Request) -> str:
     return username
 
 
+def require_admin_access(request: Request) -> str:
+    """Require a configured administrator session, even in public-demo mode."""
+    if _DASHBOARD_AUTH_PARTIAL:
+        raise HTTPException(status_code=503, detail="Administrator authentication is partially configured")
+    if not _DASHBOARD_AUTH_CONFIGURED:
+        raise HTTPException(status_code=503, detail="Configure dashboard credentials before using the admin workspace")
+    username = _read_dashboard_session(request)
+    if username is None:
+        raise HTTPException(status_code=401, detail="Administrator sign-in required")
+    return username
+
+
 class DashboardLogin(BaseModel):
     model_config = ConfigDict(extra="forbid")
     username: str = Field(min_length=1, max_length=200)
     password: str = Field(min_length=1, max_length=1024)
 
 
+class AdminDatasetImport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=1000)
+    source_type: Literal["hardware_export", "external_dataset", "synthetic_test"]
+    filename: str = Field(min_length=1, max_length=255)
+    content: str = Field(min_length=1, max_length=5_300_000)
+
+
 _device_db_cache: dict[str, Database] = {}
 _device_db_cache_lock = Lock()
+_admin_db_cache: dict[str, Database] = {}
+_admin_db_cache_lock = Lock()
 
 
 def _device_database() -> Database | None:
@@ -202,6 +229,174 @@ def _device_database() -> Database | None:
         if cache_key not in _device_db_cache:
             _device_db_cache[cache_key] = Database(cache_key)
         return _device_db_cache[cache_key]
+
+
+def _admin_database() -> Database:
+    """Return an isolated database for admin-imported datasets.
+
+    Imports stay separate from the public synthetic demo stores.
+    """
+    admin_path = Path(os.getenv("ADMIN_DB_PATH", "./data/admin.db")).expanduser().resolve()
+    cloud_path = Path(config.db_path).expanduser().resolve()
+    device_path = Path(os.getenv("DASHBOARD_DEVICE_DB_PATH") or os.getenv("PIPELINE_DB_PATH", "./data/device.db")).expanduser().resolve()
+    if admin_path in {cloud_path, device_path}:
+        raise HTTPException(status_code=503, detail="ADMIN_DB_PATH must be separate from the demo cloud and device databases")
+    cache_key = str(admin_path)
+    with _admin_db_cache_lock:
+        if cache_key not in _admin_db_cache:
+            _admin_db_cache[cache_key] = Database(cache_key)
+        database = _admin_db_cache[cache_key]
+    with database.connect() as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS admin_datasets (
+                dataset_id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+                source_type TEXT NOT NULL, source_filename TEXT NOT NULL, file_format TEXT NOT NULL,
+                sha256 TEXT NOT NULL, sample_count INTEGER NOT NULL, loss_count INTEGER NOT NULL,
+                result_count INTEGER NOT NULL, session_count INTEGER NOT NULL, imported_at REAL NOT NULL,
+                imported_by TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS admin_dataset_sessions (
+                dataset_id TEXT NOT NULL, session_id TEXT NOT NULL UNIQUE,
+                PRIMARY KEY(dataset_id, session_id),
+                FOREIGN KEY(dataset_id) REFERENCES admin_datasets(dataset_id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_admin_dataset_imported_at ON admin_datasets(imported_at DESC);
+            """
+        )
+    return database
+
+
+def _admin_dataset_rows(database: Database) -> list[dict[str, Any]]:
+    with database.connect() as conn:
+        rows = conn.execute(
+            "SELECT dataset_id,name,description,source_type,source_filename,file_format,sha256,sample_count,loss_count,result_count,session_count,imported_at,imported_by FROM admin_datasets ORDER BY imported_at DESC"
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            session_rows = conn.execute("SELECT session_id FROM admin_dataset_sessions WHERE dataset_id=? ORDER BY session_id", (row["dataset_id"],)).fetchall()
+            item = dict(row)
+            item["session_ids"] = [str(session_row[0]) for session_row in session_rows]
+            result.append(item)
+    return result
+
+
+def _coerce_admin_int(value: Any, label: str) -> int:
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"{label} must be an integer")
+    try:
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError
+        text = str(value).strip()
+        if not text or any(character in text for character in ".eE"):
+            raise ValueError
+        return int(text)
+    except (ValueError, TypeError):
+        raise ValueError(f"{label} must be an integer") from None
+
+
+def _validated_admin_sample(record: dict[str, Any], line_number: int) -> dict[str, Any]:
+    session_id = str(record.get("session_id", "")).strip()
+    if not session_id or len(session_id) > 200:
+        raise ValueError(f"Line {line_number}: session_id must contain 1 to 200 characters")
+    sensor = _coerce_admin_int(record.get("sensor"), f"Line {line_number}: sensor")
+    index = _coerce_admin_int(record.get("index", record.get("sample_index")), f"Line {line_number}: index")
+    if sensor not in (1, 2):
+        raise ValueError(f"Line {line_number}: sensor must be 1 or 2")
+    if not 0 <= index <= 100_000_000:
+        raise ValueError(f"Line {line_number}: index must be between 0 and 100000000")
+    values = record.get("values")
+    if isinstance(values, str):
+        try:
+            values = json.loads(values)
+        except json.JSONDecodeError:
+            raise ValueError(f"Line {line_number}: values must be a JSON integer array") from None
+    if values is None:
+        values = [record[key] for key in ("value_1", "value_2", "value_3") if record.get(key) not in (None, "")]
+    if not isinstance(values, (list, tuple)):
+        raise ValueError(f"Line {line_number}: values must be an array")
+    expected_channels = 3 if sensor == 1 else 2
+    if len(values) != expected_channels:
+        raise ValueError(f"Line {line_number}: sensor {sensor} requires exactly {expected_channels} values")
+    parsed_values = [_coerce_admin_int(value, f"Line {line_number}: channel value") for value in values]
+    if any(value < -8_388_608 or value > 8_388_607 for value in parsed_values):
+        raise ValueError(f"Line {line_number}: channel values must be signed 24-bit integers")
+    return {"session_id": session_id, "sensor": sensor, "index": index, "values": parsed_values}
+
+
+def _validated_admin_loss(record: dict[str, Any], line_number: int) -> dict[str, Any]:
+    session_id = str(record.get("session_id", "")).strip()
+    sensor = _coerce_admin_int(record.get("sensor"), f"Line {line_number}: sensor")
+    start = _coerce_admin_int(record.get("from_index"), f"Line {line_number}: from_index")
+    end_raw = record.get("to_index")
+    end = None if end_raw in (None, "") else _coerce_admin_int(end_raw, f"Line {line_number}: to_index")
+    reason = str(record.get("reason", "")).strip()
+    if not session_id or len(session_id) > 200 or sensor not in (1, 2) or start < 0 or (end is not None and end < start) or not reason or len(reason) > 500:
+        raise ValueError(f"Line {line_number}: invalid loss record")
+    return {"session_id": session_id, "sensor": sensor, "from_index": start, "to_index": end, "reason": reason}
+
+
+def _parse_admin_dataset(filename: str, content: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+    extension = Path(filename).suffix.lower()
+    samples: list[dict[str, Any]] = []
+    losses: list[dict[str, Any]] = []
+    if extension in {".jsonl", ".ndjson"}:
+        for line_number, line in enumerate(content.splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Line {line_number}: invalid JSON ({exc.msg})") from None
+            if not isinstance(record, dict):
+                raise ValueError(f"Line {line_number}: each JSONL record must be an object")
+            kind = str(record.get("type", "sample" if "session_id" in record else "")).lower()
+            if kind == "manifest":
+                continue
+            if kind == "sample":
+                samples.append(_validated_admin_sample(record, line_number))
+            elif kind == "loss":
+                losses.append(_validated_admin_loss(record, line_number))
+            else:
+                raise ValueError(f"Line {line_number}: unsupported record type {kind or '(missing)'}; use sample, loss, or manifest")
+        file_format = "JSONL"
+    elif extension == ".csv":
+        reader = csv.DictReader(io.StringIO(content.lstrip("\ufeff")))
+        headers = {str(header or "").strip().lower() for header in (reader.fieldnames or [])}
+        if not {"session_id", "sensor"}.issubset(headers) or not ({"index", "sample_index"} & headers):
+            raise ValueError("CSV requires session_id, sensor, and index columns")
+        if not (("values" in headers) or {"value_1", "value_2"}.issubset(headers)):
+            raise ValueError("CSV requires a values JSON-array column or value_1/value_2 columns (value_3 for Sensor 1)")
+        for line_number, raw in enumerate(reader, start=2):
+            record = {str(key or "").strip().lower(): value for key, value in raw.items()}
+            if not any(str(value or "").strip() for value in record.values()):
+                continue
+            kind = str(record.get("type", "sample") or "sample").strip().lower()
+            if kind == "manifest":
+                continue
+            if kind == "sample":
+                samples.append(_validated_admin_sample(record, line_number))
+            elif kind == "loss":
+                losses.append(_validated_admin_loss(record, line_number))
+            else:
+                raise ValueError(f"Line {line_number}: unsupported CSV record type {kind}")
+        file_format = "CSV"
+    else:
+        raise ValueError("Unsupported file type. Upload a .csv, .jsonl, or .ndjson file.")
+    if not samples:
+        raise ValueError("The uploaded dataset must contain at least one sample record")
+    if len(samples) > 50_000:
+        raise ValueError("Uploads are limited to 50,000 sample rows")
+    keys: set[tuple[str, int, int]] = set()
+    sessions = {sample["session_id"] for sample in samples}
+    for sample in samples:
+        key = (sample["session_id"], sample["sensor"], sample["index"])
+        if key in keys:
+            raise ValueError(f"Duplicate sample key in upload: session={key[0]}, sensor={key[1]}, index={key[2]}")
+        keys.add(key)
+    if any(loss["session_id"] not in sessions for loss in losses):
+        raise ValueError("Every loss record must refer to a session that has sample records in the same upload")
+    return samples, losses, file_format
 
 
 def _database_summary(database: Database, *, include_device_metrics: bool = False) -> dict[str, Any]:
@@ -282,6 +477,10 @@ def verify_token(request: Request, authorization: str | None = Header(default=No
     expected = f"Bearer {token}"
     if authorization is None or not hmac.compare_digest(authorization, expected):
         raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
+    if _public_read_only_demo_enabled():
+        # Prevent private/live pipeline records from ever entering the databases
+        # exposed by anonymous portfolio dashboard GET routes. Admin imports use ADMIN_DB_PATH.
+        raise HTTPException(status_code=403, detail="Device API operations are disabled while the public synthetic demo is enabled")
 
 
 @app.get("/health")
@@ -360,19 +559,24 @@ def events(limit: int = Query(default=100, ge=1, le=1000)) -> list[dict[str, Any
 
 @app.get("/api/auth/session")
 def dashboard_auth_session(request: Request) -> dict[str, Any]:
+    admin_username = _read_dashboard_session(request) if _DASHBOARD_AUTH_CONFIGURED else None
     if _public_read_only_demo_enabled():
         return {"authenticated": True, "login_required": False, "configured": False,
-                "needs_configuration": False, "username": "Public demo", "public_read_only": True}
+                "needs_configuration": False, "username": "Public demo",
+                "public_read_only": True, "admin_authenticated": admin_username is not None,
+                "admin_username": admin_username, "admin_configured": _DASHBOARD_AUTH_CONFIGURED,
+                "admin_needs_configuration": not _DASHBOARD_AUTH_CONFIGURED}
     if _DASHBOARD_AUTH_PARTIAL:
-        return {"authenticated": False, "login_required": True, "configured": False, "needs_configuration": True}
+        return {"authenticated": False, "login_required": True, "configured": False, "needs_configuration": True,
+                "admin_authenticated": False}
     if _DASHBOARD_AUTH_CONFIGURED:
-        username = _read_dashboard_session(request)
-        return {"authenticated": username is not None, "login_required": True, "configured": True,
-                "needs_configuration": False, "username": username}
+        return {"authenticated": admin_username is not None, "login_required": True, "configured": True,
+                "needs_configuration": False, "username": admin_username, "admin_authenticated": admin_username is not None,
+                "admin_username": admin_username}
     local_access = _is_loopback_request(request)
     return {"authenticated": local_access, "login_required": not local_access, "configured": False,
-            "needs_configuration": not local_access, "username": "local-development" if local_access else None}
-
+            "needs_configuration": not local_access, "username": "local-development" if local_access else None,
+            "admin_authenticated": False}
 
 @app.post("/api/auth/login")
 def dashboard_login(payload: DashboardLogin, request: Request, response: Response) -> dict[str, Any]:
@@ -413,6 +617,92 @@ def dashboard_logout(request: Request, response: Response) -> dict[str, bool]:
     _check_same_origin(request)
     response.delete_cookie(key=_DASHBOARD_COOKIE_NAME, path="/", httponly=True, samesite="strict")
     return {"ok": True}
+
+
+@app.get("/api/admin/overview", dependencies=[Depends(require_admin_access)])
+def admin_overview() -> dict[str, Any]:
+    database = _admin_database()
+    datasets = _admin_dataset_rows(database)
+    with database.connect() as conn:
+        sample_count = int(conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0])
+        loss_count = int(conn.execute("SELECT COUNT(*) FROM losses").fetchone()[0])
+        result_count = int(conn.execute("SELECT COUNT(*) FROM results").fetchone()[0])
+        session_count = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+    return {"dataset_count": len(datasets), "session_count": session_count, "sample_count": sample_count,
+            "loss_count": loss_count, "result_count": result_count, "datasets": datasets,
+            "notice": "Imported datasets are isolated from the public synthetic demo. Source labels are provided by the administrator and are not independently verified."}
+
+
+@app.post("/api/admin/datasets/import")
+def admin_import_dataset(payload: AdminDatasetImport, request: Request, admin_username: str = Depends(require_admin_access)) -> dict[str, Any]:
+    _check_same_origin(request)
+    if len(payload.content.encode("utf-8")) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Upload exceeds the 5 MiB limit")
+    filename = Path(payload.filename.replace("\\", "/")).name
+    try:
+        samples, losses, file_format = _parse_admin_dataset(filename, payload.content)
+    except (ValueError, csv.Error) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)[:500]) from None
+    database = _admin_database()
+    session_ids = sorted({sample["session_id"] for sample in samples})
+    existing_sessions = set(database.get_sessions())
+    collisions = sorted(existing_sessions.intersection(session_ids))
+    if collisions:
+        raise HTTPException(status_code=409, detail=f"Session ID already exists in the admin workspace: {collisions[0]}")
+    dataset_id = uuid.uuid4().hex
+    inserted = database.add_samples(samples, uploaded=True)
+    if inserted["inserted"] != len(samples) or inserted["conflicts"]:
+        raise HTTPException(status_code=409, detail="Some rows could not be stored cleanly; review the dataset keys and channel shapes")
+    loss_count = database.add_losses(losses, uploaded=True) if losses else 0
+    process_online_results(database)
+    result_count = sum(len(database.results_for_session(session_id)) for session_id in session_ids)
+    digest = hashlib.sha256(payload.content.encode("utf-8")).hexdigest()
+    imported_at = time.time()
+    with database.connect() as conn:
+        conn.execute(
+            "INSERT INTO admin_datasets(dataset_id,name,description,source_type,source_filename,file_format,sha256,sample_count,loss_count,result_count,session_count,imported_at,imported_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (dataset_id, payload.name.strip(), payload.description.strip(), payload.source_type, filename, file_format, digest, len(samples), loss_count, result_count, len(session_ids), imported_at, admin_username),
+        )
+        conn.executemany("INSERT INTO admin_dataset_sessions(dataset_id,session_id) VALUES(?,?)", [(dataset_id, session_id) for session_id in session_ids])
+    record = next(item for item in _admin_dataset_rows(database) if item["dataset_id"] == dataset_id)
+    return {"ok": True, "dataset": record, "inserted_samples": inserted["inserted"], "inserted_losses": loss_count,
+            "processing_results": result_count, "sha256": digest,
+            "notice": "Import stored in the isolated admin workspace. The system validates schema and integrity but does not verify the dataset's claimed source."}
+
+
+@app.get("/api/admin/datasets/{dataset_id}/sessions/{session_id}/preview", dependencies=[Depends(require_admin_access)])
+def admin_dataset_preview(dataset_id: str, session_id: str, limit: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
+    database = _admin_database()
+    with database.connect() as conn:
+        linked = conn.execute("SELECT 1 FROM admin_dataset_sessions WHERE dataset_id=? AND session_id=?", (dataset_id, session_id)).fetchone()
+        if not linked:
+            raise HTTPException(status_code=404, detail="Dataset or session was not found")
+        samples = conn.execute(
+            "SELECT sensor,sample_index,values_json,received_at FROM samples WHERE session_id=? ORDER BY sample_index,sensor LIMIT ?", (session_id, limit)
+        ).fetchall()
+    return {"dataset_id": dataset_id, "session_id": session_id,
+            "samples": [{"sensor": int(row["sensor"]), "index": int(row["sample_index"]), "values": json.loads(row["values_json"]), "received_at": float(row["received_at"])} for row in samples],
+            "results": database.results_for_session(session_id),
+            "losses": database.loss_count(session_id),
+            "notice": "Results are calculated from imported samples using the project's existing processing engine; they are not claimed to be clinically validated."}
+
+
+@app.delete("/api/admin/datasets/{dataset_id}", dependencies=[Depends(require_admin_access)])
+def admin_delete_dataset(dataset_id: str, request: Request) -> dict[str, Any]:
+    _check_same_origin(request)
+    database = _admin_database()
+    with database.connect() as conn:
+        rows = conn.execute("SELECT session_id FROM admin_dataset_sessions WHERE dataset_id=?", (dataset_id,)).fetchall()
+        exists = conn.execute("SELECT 1 FROM admin_datasets WHERE dataset_id=?", (dataset_id,)).fetchone()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Dataset was not found")
+    sessions = [str(row[0]) for row in rows]
+    for session_id in sessions:
+        database.delete_session(session_id)
+    with database.connect() as conn:
+        conn.execute("DELETE FROM admin_dataset_sessions WHERE dataset_id=?", (dataset_id,))
+        conn.execute("DELETE FROM admin_datasets WHERE dataset_id=?", (dataset_id,))
+    return {"ok": True, "deleted_sessions": len(sessions)}
 
 
 def _demo_seed_enabled() -> bool:

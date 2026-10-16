@@ -5,6 +5,10 @@ export type AuthSession = {
   needs_configuration: boolean;
   username?: string | null;
   public_read_only?: boolean;
+  admin_authenticated?: boolean;
+  admin_username?: string | null;
+  admin_configured?: boolean;
+  admin_needs_configuration?: boolean;
 };
 
 
@@ -195,3 +199,58 @@ export const getResources = () => apiFetch<ResourceSnapshot>('/api/dashboard/res
 export const getDemoStatus = () => apiFetch<DemoStatus>('/api/dashboard/demo/status');
 export const seedDemoDataset = () => apiFetch<DemoSeedResponse>('/api/dashboard/demo/seed', { method: 'POST' });
 export const resetDemoDataset = () => apiFetch<{ ok: boolean; session_id: string; notice: string }>('/api/dashboard/demo/reset', { method: 'POST' });
+
+
+export type AdminDataset = {
+  dataset_id: string;
+  name: string;
+  description: string;
+  source_type: 'hardware_export' | 'external_dataset' | 'synthetic_test';
+  source_filename: string;
+  file_format: 'CSV' | 'JSONL';
+  sha256: string;
+  sample_count: number;
+  loss_count: number;
+  result_count: number;
+  session_count: number;
+  session_ids: string[];
+  imported_at: number;
+  imported_by: string;
+};
+
+export type AdminOverview = {
+  dataset_count: number;
+  session_count: number;
+  sample_count: number;
+  loss_count: number;
+  result_count: number;
+  datasets: AdminDataset[];
+  notice: string;
+};
+
+export type AdminDatasetPreview = {
+  dataset_id: string;
+  session_id: string;
+  samples: Array<{ sensor: number; index: number; values: number[]; received_at: number }>;
+  results: WindowResult[];
+  losses: number;
+  notice: string;
+};
+
+export type AdminImportRequest = {
+  name: string;
+  description: string;
+  source_type: AdminDataset['source_type'];
+  filename: string;
+  content: string;
+};
+
+export const getAdminOverview = () => apiFetch<AdminOverview>('/api/admin/overview');
+export const importAdminDataset = (payload: AdminImportRequest) =>
+  apiFetch<{ ok: boolean; dataset: AdminDataset; inserted_samples: number; inserted_losses: number; processing_results: number; sha256: string; notice: string }>(
+    '/api/admin/datasets/import', { method: 'POST', body: JSON.stringify(payload) },
+  );
+export const getAdminDatasetPreview = (datasetId: string, sessionId: string) =>
+  apiFetch<AdminDatasetPreview>(`/api/admin/datasets/${encodeURIComponent(datasetId)}/sessions/${encodeURIComponent(sessionId)}/preview`);
+export const deleteAdminDataset = (datasetId: string) =>
+  apiFetch<{ ok: boolean; deleted_sessions: number }>(`/api/admin/datasets/${encodeURIComponent(datasetId)}`, { method: 'DELETE' });

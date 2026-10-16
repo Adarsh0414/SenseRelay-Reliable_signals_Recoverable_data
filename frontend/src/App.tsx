@@ -7,8 +7,8 @@ import {
   HardDrive, HeartPulse, Layers3, LockKeyhole, LogOut, Menu, RadioTower, RefreshCw, Search,
   Server, Settings2, ShieldCheck, Signal, WifiOff, X, Sun, Moon, Download,
 } from 'lucide-react';
-import { apiFetch, ApiError, getAuthSession, getDemoStatus, getEvents, getLosses, getResources, getResults, getSessions, getSummary, resetDemoDataset, seedDemoDataset } from './api';
-import type { AuthSession, DemoStatus, IntegrityEvent, LossRecord, ResourceSnapshot, SessionRow, Summary, WindowResult } from './api';
+import { apiFetch, ApiError, deleteAdminDataset, getAdminDatasetPreview, getAdminOverview, getAuthSession, getDemoStatus, getEvents, getLosses, getResources, getResults, getSessions, getSummary, importAdminDataset, resetDemoDataset, seedDemoDataset } from './api';
+import type { AdminDataset, AdminDatasetPreview, AdminOverview, AuthSession, DemoStatus, IntegrityEvent, LossRecord, ResourceSnapshot, SessionRow, Summary, WindowResult } from './api';
 import {
   CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
@@ -81,6 +81,7 @@ function Header() {
           <NavLink to="/architecture" onClick={closeMenu} className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>Architecture</NavLink>
           <NavLink to="/security" onClick={closeMenu} className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>Security</NavLink>
           <NavLink to="/docs" onClick={closeMenu} className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>Documentation</NavLink>
+          <NavLink to="/admin" onClick={closeMenu} className={({ isActive }) => isActive ? 'nav-link nav-link-admin active' : 'nav-link nav-link-admin'}><ShieldCheck size={15} aria-hidden="true" /> Admin</NavLink>
           <ThemeToggle compact />
           <Link to="/dashboard" onClick={closeMenu} className="button button-dark header-cta">Open dashboard <ArrowUpRight size={16} /></Link>
         </nav>
@@ -388,6 +389,126 @@ function LoginPanel({ onSignedIn }: { onSignedIn: () => void }) {
   return <section className="auth-page"><div className="auth-card"><span className="auth-icon"><ShieldCheck size={23} /></span><div className="eyebrow eyebrow-light">PROTECTED WORKSPACE</div><h1>Sign in to Signal Operations.</h1><p>Use the dashboard credentials configured by the server administrator. Device ingestion credentials are not dashboard login credentials.</p><form onSubmit={submit} className="login-form"><label htmlFor="login-username">Username</label><input id="login-username" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required maxLength={200} /><label htmlFor="login-password">Password</label><input id="login-password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required maxLength={1024} />{error && <p className="form-error" role="alert"><CircleAlert size={15} />{error}</p>}<button className="button button-primary login-submit" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'} <ArrowRight size={16} /></button></form><p className="auth-footnote"><LockKeyhole size={14} /> Session cookie is HttpOnly and server-signed.</p></div></section>;
 }
 
+function AdminGate() {
+  const [auth, setAuth] = useState<AuthSession | null>(null);
+  const [checking, setChecking] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const refreshAuth = useCallback(async () => {
+    setChecking(true);
+    try { setAuth(await getAuthSession()); setLoadError(''); }
+    catch (error) { setLoadError(error instanceof Error ? error.message : 'Could not reach the API'); }
+    finally { setChecking(false); }
+  }, []);
+  useEffect(() => { void refreshAuth(); }, [refreshAuth]);
+  if (checking) return <PageFrame><div className="center-state"><RefreshCw className="spin" size={24} /><h1>Checking administrator access…</h1></div></PageFrame>;
+  if (loadError) return <PageFrame><ErrorState title="The API is not reachable" detail="The admin workspace needs the FastAPI service. Retry after the deployment is live." onRetry={() => void refreshAuth()} /></PageFrame>;
+  if (auth?.admin_authenticated) {
+    return <AdminWorkspace username={auth.admin_username || auth.username || 'Administrator'} onLogout={async () => { try { await apiFetch('/api/auth/logout', { method: 'POST' }); } finally { await refreshAuth(); } }} />;
+  }
+  const adminConfigured = auth?.admin_configured ?? auth?.configured ?? false;
+  const adminNeedsConfiguration = auth?.admin_needs_configuration ?? auth?.needs_configuration ?? false;
+  if (!adminConfigured || adminNeedsConfiguration) return <PageFrame><AdminSetupNotice onRetry={() => void refreshAuth()} /></PageFrame>;
+  return <PageFrame><AdminLoginPanel onSignedIn={() => void refreshAuth()} /></PageFrame>;
+}
+
+function AdminSetupNotice({ onRetry }: { onRetry: () => void }) {
+  return <section className="auth-page"><div className="auth-card"><span className="auth-icon"><LockKeyhole size={23} /></span><div className="eyebrow eyebrow-light">ADMINISTRATOR SETUP REQUIRED</div><h1>Admin sign-in is not configured.</h1><p>The public synthetic demo can remain open, but the private admin workspace requires all three server-side dashboard credentials.</p><div className="code-panel"><code>DASHBOARD_USERNAME</code><code>DASHBOARD_PASSWORD</code><code>DASHBOARD_SESSION_SECRET</code></div><p className="muted-copy">Set a password of at least 12 characters and an independent session secret of at least 32 characters in Render Environment, then redeploy.</p><button className="button button-dark" onClick={onRetry}>Check again <RefreshCw size={15} /></button></div></section>;
+}
+
+function AdminLoginPanel({ onSignedIn }: { onSignedIn: () => void }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError('');
+    try {
+      await apiFetch('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+      onSignedIn();
+    } catch (err) { setError(err instanceof Error ? err.message : 'Sign-in failed'); }
+    finally { setBusy(false); }
+  }
+  return <section className="auth-page"><div className="auth-card"><span className="auth-icon"><ShieldCheck size={23} /></span><div className="eyebrow eyebrow-light">ADMINISTRATOR WORKSPACE</div><h1>Sign in to manage datasets.</h1><p>Public visitors can inspect the synthetic demo. Only your administrator session can import, inspect, and remove datasets in the separate admin workspace.</p><form onSubmit={submit} className="login-form"><label htmlFor="admin-login-username">Username</label><input id="admin-login-username" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required maxLength={200} /><label htmlFor="admin-login-password">Password</label><input id="admin-login-password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required maxLength={1024} />{error && <p className="form-error" role="alert"><CircleAlert size={15} />{error}</p>}<button className="button button-primary login-submit" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in as admin'} <ArrowRight size={16} /></button></form><p className="auth-footnote"><LockKeyhole size={14} /> Server-signed HttpOnly session. Device-ingestion token is not a login credential.</p></div></section>;
+}
+
+function downloadCsvTemplate() {
+  const template = 'session_id,sensor,index,value_1,value_2,value_3\nfield-session-001,1,0,100,101,102\nfield-session-001,2,0,200,201,\nfield-session-001,1,1,103,104,105\nfield-session-001,2,1,202,203,\n';
+  const url = URL.createObjectURL(new Blob([template], { type: 'text/csv;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url; link.download = 'mayacardio_sensor_samples_template.csv'; link.click();
+  URL.revokeObjectURL(url);
+}
+
+function AdminWorkspace({ username, onLogout }: { username: string; onLogout: () => void }) {
+  const [overview, setOverview] = useState<AdminOverview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [sourceType, setSourceType] = useState<AdminDataset['source_type']>('hardware_export');
+  const [file, setFile] = useState<File | null>(null);
+  const [fileInputKey, setFileInputKey] = useState(0);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [preview, setPreview] = useState<AdminDatasetPreview | null>(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try { setOverview(await getAdminOverview()); setError(''); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not load admin workspace'); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { void reload(); }, [reload]);
+
+  async function importFile(event: FormEvent) {
+    event.preventDefault(); setError(''); setMessage(''); setPreview(null);
+    if (!file) { setError('Choose a CSV or JSONL file first.'); return; }
+    if (file.size > 5 * 1024 * 1024) { setError('Files are limited to 5 MiB. Split larger datasets into smaller imports.'); return; }
+    const trimmedName = name.trim();
+    if (!trimmedName) { setError('Give this dataset a name.'); return; }
+    setBusy(true);
+    try {
+      const response = await importAdminDataset({ name: trimmedName, description: description.trim(), source_type: sourceType, filename: file.name, content: await file.text() });
+      setMessage(`Imported ${response.inserted_samples.toLocaleString()} sample rows across ${response.dataset.session_count} session(s). Stored processing results: ${response.processing_results.toLocaleString()}.`);
+      setName(''); setDescription(''); setFile(null); setFileInputKey((value) => value + 1);
+      await reload();
+    } catch (caught) { setError(caught instanceof Error ? caught.message : 'Dataset import failed'); }
+    finally { setBusy(false); }
+  }
+
+  async function inspect(dataset: AdminDataset, sessionId: string) {
+    setPreviewBusy(true); setError(''); setPreview(null);
+    try { setPreview(await getAdminDatasetPreview(dataset.dataset_id, sessionId)); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not inspect dataset'); }
+    finally { setPreviewBusy(false); }
+  }
+
+  async function removeDataset(dataset: AdminDataset) {
+    if (!window.confirm(`Delete imported dataset “${dataset.name}” and its ${dataset.sample_count.toLocaleString()} stored sample rows? This does not change the public demo.`)) return;
+    setError(''); setMessage('');
+    try { const result = await deleteAdminDataset(dataset.dataset_id); setMessage(`Dataset removed with ${result.deleted_sessions} session(s). The public demo was not changed.`); setPreview(null); await reload(); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : 'Dataset deletion failed'); }
+  }
+
+  const formatSource = (source: AdminDataset['source_type']) => source === 'hardware_export' ? 'Hardware / collector export' : source === 'external_dataset' ? 'External dataset mapped to schema' : 'Synthetic test dataset';
+  return <PageFrame>
+    <section className="info-hero admin-hero"><div className="content-width"><div className="eyebrow eyebrow-light"><ShieldCheck size={15} /> ADMIN / DATA WORKSPACE</div><h1>Manage operational datasets.</h1><p>Signed in as <strong>{username}</strong>. Imported data is stored separately from the public synthetic demo. Upload a supported sample file to inspect records and processing results here.</p><div className="admin-hero-actions"><span className="admin-private-pill"><LockKeyhole size={14} /> Private admin session</span><button className="button button-outline" onClick={onLogout}><LogOut size={15} /> Sign out</button></div></div></section>
+    <section className="section content-section admin-content">
+      <div className="admin-warning"><CircleAlert size={18} /><div><strong>Dataset import limits and provenance</strong><p>Supports CSV or JSONL files up to 5 MiB and 50,000 sample rows. Sensor 1 requires three signed 24-bit integer channels; Sensor 2 requires two. Data is schema-checked, but its claimed source is not independently verified. Do not upload patient-identifying or sensitive medical data to this free demo host; its filesystem is temporary.</p></div></div>
+      {error && <div className="alert-banner" role="alert"><CircleAlert size={17} /><div><strong>Admin action failed</strong><span>{error}</span></div><button className="button button-sm button-outline" onClick={() => void reload()}>Retry</button></div>}
+      {message && <div className="demo-feedback" role="status"><CheckCircle2 size={16} /><span>{message}</span></div>}
+      <div className="metric-grid metric-grid-four admin-metrics"><MetricCard label="Imported datasets" value={overview?.dataset_count ?? 0} icon={<Database size={18} />} detail="Separately tracked imports" tone="blue" /><MetricCard label="Sessions" value={overview?.session_count ?? 0} icon={<Layers3 size={18} />} detail="Imported session identifiers" tone="violet" /><MetricCard label="Sample rows" value={overview?.sample_count ?? 0} icon={<Activity size={18} />} detail="Validated raw sample records" tone="green" /><MetricCard label="Processing windows" value={overview?.result_count ?? 0} icon={<CheckCircle2 size={18} />} detail={`${overview?.loss_count ?? 0} loss records`} tone="amber" /></div>
+      <div className="admin-columns">
+        <section className="panel admin-import-panel"><div className="panel-heading"><div><h2>Add dataset</h2><p>Import existing sensor sample data into the private admin store.</p></div><Database size={19} /></div><form className="admin-import-form" onSubmit={(event) => void importFile(event)}><label htmlFor="admin-dataset-name">Dataset name</label><input id="admin-dataset-name" value={name} onChange={(event) => setName(event.target.value)} maxLength={120} placeholder="e.g. Bench test - October 2026" required /><label htmlFor="admin-dataset-description">Description (optional)</label><textarea id="admin-dataset-description" value={description} onChange={(event) => setDescription(event.target.value)} maxLength={1000} rows={3} placeholder="Record the collection context or mapping used." /><label htmlFor="admin-dataset-source">Source label</label><select id="admin-dataset-source" value={sourceType} onChange={(event) => setSourceType(event.target.value as AdminDataset['source_type'])}><option value="hardware_export">Hardware / collector export</option><option value="external_dataset">External dataset mapped to MayaCardio schema</option><option value="synthetic_test">Synthetic test dataset</option></select><label htmlFor="admin-dataset-file">Dataset file (.csv, .jsonl, .ndjson)</label><input key={fileInputKey} id="admin-dataset-file" type="file" accept=".csv,.jsonl,.ndjson,text/csv,application/x-ndjson" onChange={(event) => setFile(event.target.files?.[0] ?? null)} required /><p className="admin-file-note">CSV columns: <code>session_id,sensor,index,value_1,value_2,value_3</code>. JSONL supports <code>sample</code>, <code>loss</code>, and optional <code>manifest</code> records.</p><div className="admin-form-actions"><button className="button button-outline" type="button" onClick={downloadCsvTemplate}><ArrowDownToLine size={15} /> Download CSV template</button><button className="button button-primary" type="submit" disabled={busy || loading}>{busy ? 'Validating and importing…' : 'Import dataset'} <ArrowRight size={15} /></button></div></form></section>
+        <section className="panel admin-dataset-list"><div className="panel-heading"><div><h2>Imported datasets</h2><p>{loading ? 'Refreshing stored metadata…' : `${overview?.datasets.length ?? 0} dataset(s) in this admin workspace.`}</p></div><button className="button button-outline button-sm" onClick={() => void reload()} disabled={loading}><RefreshCw size={14} /> Refresh</button></div>{!overview?.datasets.length ? <EmptyState icon={<Database />} title="No datasets imported yet" detail="Use the upload form to add a CSV or JSONL file. This won't modify the public synthetic demo." /> : <div className="admin-dataset-cards">{overview.datasets.map((dataset) => <article className="admin-dataset-card" key={dataset.dataset_id}><div className="admin-dataset-heading"><div><span className="panel-pill">{dataset.file_format} · {formatSource(dataset.source_type)}</span><h3>{dataset.name}</h3><p>{dataset.description || dataset.source_filename}</p></div><button className="icon-button admin-delete-button" title={`Delete ${dataset.name}`} aria-label={`Delete ${dataset.name}`} onClick={() => void removeDataset(dataset)}><X size={16} /></button></div><div className="admin-dataset-stats"><span><strong>{dataset.sample_count.toLocaleString()}</strong> samples</span><span><strong>{dataset.session_count}</strong> sessions</span><span><strong>{dataset.result_count.toLocaleString()}</strong> windows</span><span><strong>{dataset.loss_count}</strong> loss records</span></div><small>Imported {formatTime(dataset.imported_at)} · SHA-256 {dataset.sha256.slice(0, 12)}…</small><div className="admin-session-list">{dataset.session_ids.map((sessionId) => <button key={sessionId} type="button" className="button button-outline button-sm" onClick={() => void inspect(dataset, sessionId)}>Inspect {sessionId} <ArrowUpRight size={13} /></button>)}</div></article>)}</div>}</section>
+      </div>
+      {previewBusy && <section className="panel admin-preview-panel"><LoadingState label="Loading sample records and processing results…" /></section>}
+      {preview && <section className="panel table-panel admin-preview-panel"><div className="panel-heading"><div><h2>Dataset inspection</h2><p>Session {preview.session_id} · {preview.samples.length} sample rows previewed · {preview.results.length} processing windows · {preview.losses} loss record(s)</p></div><button className="button button-outline button-sm" onClick={() => setPreview(null)}>Close preview <X size={14} /></button></div><p className="admin-preview-note">{preview.notice}</p><h3>Sample preview</h3><div className="table-scroll"><table className="data-table"><thead><tr><th>Sensor</th><th>Index</th><th>Values</th><th>Received at</th></tr></thead><tbody>{preview.samples.map((sample, index) => <tr key={`${sample.sensor}-${sample.index}-${index}`}><td>Sensor {sample.sensor}</td><td className="numeric-cell">{sample.index.toLocaleString()}</td><td><code>{JSON.stringify(sample.values)}</code></td><td>{formatTime(sample.received_at)}</td></tr>)}</tbody></table></div><h3>Processing results</h3>{preview.results.length ? <div className="table-scroll"><table className="data-table"><thead><tr><th>Window</th><th>Mode</th><th>Completeness</th><th>Missing samples</th><th>Heart rate</th></tr></thead><tbody>{preview.results.slice(0, 100).map((result) => <tr key={`${result.window_index}-${result.mode}`}><td>{result.window_index}</td><td>{result.mode}</td><td>{result.complete ? 'Complete' : 'Incomplete'}</td><td>{result.missing_1 + result.missing_2}</td><td>{result.heart_rate === null ? 'Unavailable' : result.heart_rate}</td></tr>)}</tbody></table></div> : <p className="muted-copy">The imported sample range does not yet contain a complete processing window. More consecutive samples may be required for derived results.</p>}</section>}
+      <p className="admin-data-boundary">Imported data is kept in the admin workspace and does not appear in the public seeded demo. To ingest live sensor data, run the collector and configure its authenticated cloud destination; uploading a file does not prove live-device provenance.</p>
+    </section>
+  </PageFrame>;
+}
+
 type DashboardData = {
   summary: Summary | null;
   sessions: SessionRow[];
@@ -493,7 +614,7 @@ function DashboardShell({ username, publicReadOnly = false, onLogout }: { userna
 
   return (
     <div className={`dashboard-layout ${themeMode === 'dark' ? 'dashboard-theme-dark' : ''}`}>
-      <header className="dashboard-topbar"><div className="dashboard-brand-wrap"><Brand compact /><span className="workspace-divider" /><span className="workspace-label">Operations console</span></div><div className="topbar-right"><span className="environment-pill"><span className="live-dot" /> Synthetic environment</span><span className="user-chip"><span className="avatar-dot">{username.slice(0, 1).toUpperCase()}</span><span>{username}</span></span><ThemeToggle compact />{onLogout && <button className="icon-button logout-button" onClick={onLogout} aria-label="Sign out" title="Sign out"><LogOut size={17} /></button>}<Link to="/" className="button button-outline dashboard-home-link" aria-label="Go to Home page" title="Go to Home page"><Home size={15} aria-hidden="true" /><span>Home</span></Link></div></header>
+      <header className="dashboard-topbar"><div className="dashboard-brand-wrap"><Brand compact /><span className="workspace-divider" /><span className="workspace-label">Operations console</span></div><div className="topbar-right"><span className="environment-pill"><span className="live-dot" /> Synthetic environment</span><span className="user-chip"><span className="avatar-dot">{username.slice(0, 1).toUpperCase()}</span><span>{username}</span></span><ThemeToggle compact />{onLogout && <button className="icon-button logout-button" onClick={onLogout} aria-label="Sign out" title="Sign out"><LogOut size={17} /></button>}<Link to="/admin" className="button button-outline dashboard-home-link"><ShieldCheck size={15} aria-hidden="true" /><span>Admin</span></Link><Link to="/" className="button button-outline dashboard-home-link" aria-label="Go to Home page" title="Go to Home page"><Home size={15} aria-hidden="true" /><span>Home</span></Link></div></header>
       <div className="dashboard-body">
         <aside className={`dashboard-sidebar ${mobileNavOpen ? 'sidebar-open' : ''}`}>
           <div className="sidebar-caption">WORKSPACE</div>
@@ -729,6 +850,7 @@ function MetadataManager() {
     const pages: Record<string, { title: string; description: string; robots: string }> = {
       '/': { title: 'MayaCardio - Signal Operations', description: 'An observable synthetic biosignal pipeline built around durable data capture, online/offline processing, and transparent recovery.', robots: 'index,follow' },
       '/dashboard': { title: 'Monitoring Dashboard | MayaCardio', description: 'Inspect synthetic pipeline status, persisted samples, processing results, data loss records, and service host metrics.', robots: 'noindex,nofollow' },
+      '/admin': { title: 'Admin Dataset Workspace | MayaCardio', description: 'Privately manage imported MayaCardio sample datasets.', robots: 'noindex,nofollow' },
       '/architecture': { title: 'System Architecture | MayaCardio', description: 'Learn how the synthetic biosignal pipeline collects, persists, processes, and synchronizes data.', robots: 'index,follow' },
       '/security': { title: 'Security and Scope | MayaCardio', description: 'Security boundaries, synthetic-data scope, and deployment responsibilities for the MayaCardio engineering demonstration.', robots: 'index,follow' },
       '/docs': { title: 'Developer Documentation | MayaCardio', description: 'Setup, API reference, testing, and implementation documentation for the MayaCardio pipeline.', robots: 'index,follow' },
@@ -782,6 +904,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/dashboard" element={<DashboardGate />} />
+        <Route path="/admin" element={<AdminGate />} />
         <Route path="/architecture" element={<InfoPage kind="architecture" />} />
         <Route path="/security" element={<InfoPage kind="security" />} />
         <Route path="/docs" element={<InfoPage kind="docs" />} />

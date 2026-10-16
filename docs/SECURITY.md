@@ -8,7 +8,8 @@ This project is an engineering demonstration using synthetic sensor data. It is 
 
 - `CLOUD_API_TOKEN` authenticates device-to-cloud ingestion. React never reads or embeds this token.
 - `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`, and `DASHBOARD_SESSION_SECRET` protect browser sessions for normal remote deployments.
-- `DASHBOARD_PUBLIC_READ_ONLY=true` is an optional portfolio-only mode for a deployment containing synthetic demo data only. It permits anonymous GET access to dashboard routes, rejects dashboard write actions, and requires `ENABLE_SYNTHETIC_DEMO_SEED=true`; do not enable it if real or private records can enter the dashboard databases.
+- `DASHBOARD_PUBLIC_READ_ONLY=true` is an optional portfolio-only mode for a deployment containing synthetic demo data only. It permits anonymous GET access to public dashboard routes, rejects dashboard write actions, and requires `ENABLE_SYNTHETIC_DEMO_SEED=true`.
+- The `/admin` browser route and `/api/admin/*` endpoints require a valid signed administrator session even while public demo access is enabled. Admin dataset imports are stored in a separate database configured through `ADMIN_DB_PATH` and are not included in the public demo APIs. Source labels are self-reported, not independently verified.
 - Dashboard sessions use an HMAC-signed cookie with an eight-hour expiry, `HttpOnly`, `SameSite=Strict`, and `Secure` when HTTPS is used or explicitly configured.
 - Credentials are read by the backend from environment variables. Partial configuration fails closed. If dashboard credentials are entirely absent, dashboard data routes allow loopback clients only for local development.
 - If `CLOUD_API_TOKEN` is absent, ingestion is allowed only from loopback clients; remote ingestion fails closed with a configuration error.
@@ -45,7 +46,8 @@ Before exposing an instance publicly:
 7. Review trusted proxy and forwarded-header configuration before relying on scheme detection.
 8. Run dependency vulnerability scanning and a formal security review before production use.
 9. Set `APP_ENV=production` before a public deployment. API docs, ReDoc, and the OpenAPI schema are disabled in production by default; set `ENABLE_API_DOCS=true` only after an intentional exposure review.
-10. Do not ingest real patient data into this student demonstration.
+10. Do not ingest real patient data into this student demonstration. The admin importer accepts schema-conforming CSV/JSONL sample files for engineering testing; it is not a general medical-dataset importer or a live-sensor connector.
+11. Configure `ADMIN_DB_PATH` to a file separate from `CLOUD_DB_PATH` and `DASHBOARD_DEVICE_DB_PATH`. On Render Free, all filesystem paths are ephemeral; do not treat an admin import as durably stored operational data.
 
 ## Known limitations
 

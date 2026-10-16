@@ -8,12 +8,16 @@ from starlette.requests import Request
 from fastapi.testclient import TestClient
 
 
-def _reload_app(monkeypatch, tmp_path, *, dashboard_auth: bool, public_read_only: bool = False):
+def _reload_app(monkeypatch, tmp_path, *, dashboard_auth: bool, public_read_only: bool = False, cloud_token: str | None = None):
     monkeypatch.setenv("CLOUD_DB_PATH", str(tmp_path / "cloud.db"))
     monkeypatch.setenv("PIPELINE_DB_PATH", str(tmp_path / "missing-device.db"))
     monkeypatch.setenv("DASHBOARD_DEVICE_DB_PATH", str(tmp_path / "missing-device.db"))
     monkeypatch.setenv("DEMO_DATASET_PATH", str(tmp_path / "synthetic_demo_dataset.jsonl"))
-    monkeypatch.delenv("CLOUD_API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_DB_PATH", str(tmp_path / "admin.db"))
+    if cloud_token is None:
+        monkeypatch.delenv("CLOUD_API_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("CLOUD_API_TOKEN", cloud_token)
     if public_read_only:
         monkeypatch.setenv("DASHBOARD_PUBLIC_READ_ONLY", "true")
     else:
@@ -102,7 +106,7 @@ def test_public_read_only_demo_is_auto_seeded_and_blocks_mutations(monkeypatch, 
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("ENABLE_SYNTHETIC_DEMO_SEED", "true")
     monkeypatch.setenv("DASHBOARD_PUBLIC_READ_ONLY", "true")
-    cloud_module = _reload_app(monkeypatch, tmp_path, dashboard_auth=True, public_read_only=True)
+    cloud_module = _reload_app(monkeypatch, tmp_path, dashboard_auth=True, public_read_only=True, cloud_token="valid-test-ingestion-token")
 
     # The startup hook materializes the same deterministic fixture visitors will inspect.
     with TestClient(cloud_module.app, base_url="https://mayacardio.example") as client:
@@ -124,7 +128,8 @@ def test_public_read_only_demo_is_auto_seeded_and_blocks_mutations(monkeypatch, 
         assert client.post("/api/dashboard/demo/seed").status_code == 403
         assert client.post("/api/dashboard/demo/reset").status_code == 403
 
-        # Public dashboard mode does not disable ingestion-token protection.
+        # Even a valid device-ingestion token cannot write into the data stores
+        # exposed by anonymous dashboard reads in public portfolio mode.
         scope = {
             "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
             "method": "POST", "scheme": "https", "path": "/v1/ingest", "raw_path": b"/v1/ingest",
@@ -133,8 +138,8 @@ def test_public_read_only_demo_is_auto_seeded_and_blocks_mutations(monkeypatch, 
         }
         request = Request(scope)
         with pytest.raises(HTTPException) as raised:
-            cloud_module.verify_token(request, None)
-        assert raised.value.status_code == 503
+            cloud_module.verify_token(request, "Bearer valid-test-ingestion-token")
+        assert raised.value.status_code == 403
 
 def test_remote_ingestion_fails_closed_when_cloud_token_is_missing(monkeypatch, tmp_path):
     cloud_module = _reload_app(monkeypatch, tmp_path, dashboard_auth=False)
@@ -300,3 +305,80 @@ def test_demo_dataset_seeding_is_disabled_by_default_outside_dev(monkeypatch, tm
     assert client.get("/api/dashboard/demo/status").json()["enabled"] is False
     assert client.post("/api/dashboard/demo/seed").status_code == 404
     assert client.post("/api/dashboard/demo/reset").status_code == 404
+
+
+def test_admin_login_and_dataset_import_are_separate_from_public_demo(monkeypatch, tmp_path):
+    cloud_module = _reload_app(monkeypatch, tmp_path, dashboard_auth=True, public_read_only=True)
+    with TestClient(cloud_module.app, base_url="https://mayacardio.example") as client:
+        public_auth = client.get("/api/auth/session").json()
+        assert public_auth["public_read_only"] is True
+        assert public_auth["authenticated"] is True
+        assert public_auth["admin_authenticated"] is False
+        assert client.get("/api/admin/overview").status_code == 401
+
+        login = client.post("/api/auth/login", json={"username": "reviewer", "password": "a-long-test-only-password"})
+        assert login.status_code == 200, login.text
+        auth = client.get("/api/auth/session").json()
+        assert auth["authenticated"] is True  # public demo remains accessible
+        assert auth["admin_authenticated"] is True
+        assert auth["username"] == "Public demo"  # public workspace label remains distinct
+
+        before = client.get("/api/dashboard/sessions").json()
+        csv_content = (
+            "session_id,sensor,index,value_1,value_2,value_3\n"
+            "admin-import-session-001,1,0,100,101,102\n"
+            "admin-import-session-001,2,0,200,201,\n"
+        )
+        payload = {
+            "name": "Hardware bench export",
+            "description": "Small non-sensitive import used by the admin workflow test.",
+            "source_type": "hardware_export",
+            "filename": "bench.csv",
+            "content": csv_content,
+        }
+        imported = client.post("/api/admin/datasets/import", json=payload)
+        assert imported.status_code == 200, imported.text
+        body = imported.json()
+        assert body["inserted_samples"] == 2
+        assert body["dataset"]["file_format"] == "CSV"
+        assert body["dataset"]["session_ids"] == ["admin-import-session-001"]
+
+        overview = client.get("/api/admin/overview")
+        assert overview.status_code == 200, overview.text
+        assert overview.json()["dataset_count"] == 1
+        assert overview.json()["sample_count"] == 2
+
+        after = client.get("/api/dashboard/sessions").json()
+        public_ids = {item["session_id"] for item in after["items"]}
+        assert "admin-import-session-001" not in public_ids
+        assert before["total"] == after["total"]
+
+        dataset = body["dataset"]
+        preview = client.get(f"/api/admin/datasets/{dataset['dataset_id']}/sessions/admin-import-session-001/preview")
+        assert preview.status_code == 200, preview.text
+        assert len(preview.json()["samples"]) == 2
+
+        deleted = client.delete(f"/api/admin/datasets/{dataset['dataset_id']}")
+        assert deleted.status_code == 200, deleted.text
+        assert client.get("/api/admin/overview").json()["dataset_count"] == 0
+        assert client.get("/api/dashboard/demo/status").json()["sample_rows"] == 23960
+
+
+def test_admin_routes_require_admin_session_and_validate_dataset_schema(monkeypatch, tmp_path):
+    cloud_module = _reload_app(monkeypatch, tmp_path, dashboard_auth=True, public_read_only=True)
+    with TestClient(cloud_module.app, base_url="https://mayacardio.example") as public_client:
+        response = public_client.post("/api/admin/datasets/import", json={
+            "name": "Unauthorised", "source_type": "external_dataset", "filename": "data.csv",
+            "description": "", "content": "session_id,sensor,index,value_1,value_2\nany,2,0,1,2\n",
+        })
+        assert response.status_code == 401
+
+    with TestClient(cloud_module.app, base_url="https://mayacardio.example") as admin_client:
+        assert admin_client.post("/api/auth/login", json={"username": "reviewer", "password": "a-long-test-only-password"}).status_code == 200
+        bad = admin_client.post("/api/admin/datasets/import", json={
+            "name": "Invalid channels", "source_type": "external_dataset", "filename": "data.csv",
+            "description": "",
+            "content": "session_id,sensor,index,value_1,value_2,value_3\nwrong-channel-shape,1,0,10,11,\n",
+        })
+        assert bad.status_code == 422
+        assert "requires exactly 3 values" in bad.json()["detail"]
