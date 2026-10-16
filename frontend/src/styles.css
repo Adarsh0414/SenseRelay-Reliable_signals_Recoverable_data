@@ -688,3 +688,23 @@ body { min-height: 0; }
   .admin-form-actions > * { width: 100%; justify-content: center; }
   .admin-dataset-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Layout consistency fix: the dashboard body must fill the available grid width on every route.
+   Without an explicit width, flex sizing plus auto margins can shrink the body around content-heavy pages. */
+.dashboard-body {
+  width: 100%;
+  max-width: 1600px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Give the home-page scope notice a little separation from the hero for a calmer, more premium rhythm. */
+.site-shell-home .notice-strip {
+  margin-top: 18px;
+}
+
+@media (max-width: 800px) {
+  .site-shell-home .notice-strip {
+    margin-top: 12px;
+  }
+}
