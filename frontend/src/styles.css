@@ -494,17 +494,17 @@ main { min-width: 0; }
 }
 
 
-/* Shared application shell: keep the browser viewport fixed and scroll content inside its workspace. */
+/* Shared application shell: dashboard workspaces use an internal scroll area; the public Home page keeps its full-page content and normal scrolling. */
 html, body, #root { width: 100%; height: 100%; min-height: 0; overflow: hidden; }
 body { min-height: 0; }
 .site-shell { height: 100%; width: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--page); color: var(--ink); }
 .site-header { flex: 0 0 70px; height: 70px; }
 .site-main { flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; background: var(--page); }
 .site-shell .site-footer { flex: 0 0 auto; }
-.site-shell-home .site-main { display: flex; flex-direction: column; overflow: hidden; }
-.site-shell-home .site-footer { display: none; }
-.site-shell-home .hero-section { display: flex; flex: 1 1 auto; min-height: 0; }
-.site-shell-home .hero-inner { width: 100%; height: 100%; padding: clamp(22px, 4.5vh, 48px) 28px; grid-template-columns: minmax(0, 1fr) minmax(390px, .92fr); gap: clamp(26px, 4vw, 52px); align-items: center; }
+.site-shell-home .site-main { display: block; overflow-x: hidden; overflow-y: auto; }
+.site-shell-home .site-footer { display: block; }
+.site-shell-home .hero-section { flex: 0 0 auto; min-height: 0; }
+.site-shell-home .hero-inner { height: auto; min-height: 0; }
 .site-shell-home .hero-copy h1 { font-size: clamp(43px, 4.8vw, 63px); margin: 18px 0 18px; }
 .site-shell-home .hero-description { font-size: clamp(13px, 1.15vw, 15px); line-height: 1.7; }
 .site-shell-home .hero-actions { margin: 24px 0 23px; }
